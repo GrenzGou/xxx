@@ -1,5 +1,5 @@
 - name: Install Podman on CentOS/RHEL/Fedora
-  hosts: manager
+  hosts: database_ods_clickhouse
   tasks:
     
     - name: Install Neofetch
