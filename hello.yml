@@ -1,0 +1,7 @@
+- name: Install Podman on CentOS/RHEL/Fedora
+  hosts: localhost
+  tasks:
+    
+    - name: hello
+      ansible.builtin.debug:
+        msg: "Hello World"
