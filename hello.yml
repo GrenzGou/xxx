@@ -1,7 +1,9 @@
 - name: Install Podman on CentOS/RHEL/Fedora
-  hosts: localhost
+  hosts: manager
   tasks:
     
-    - name: hello
-      ansible.builtin.debug:
-        msg: "Hello World"
+    - name: Install Neofetch
+      dnf:
+        name: neofetch
+        state: latest
+
