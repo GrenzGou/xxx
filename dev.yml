@@ -1,0 +1,141 @@
+-  name: ALL Environment
+   hosts:  all
+   become: true
+   gather_facts: true
+   vars:
+     init: 0
+     passwd_string: !vault |
+       $ANSIBLE_VAULT;1.1;AES256
+       33643138353934396332306232656132356137373837646134613838366431346238366230306534
+       6437363364306566306636613262656366653233313761630a343764633032316330623738636163
+       36316231613432336535396562396530383134306363653837343932373563373033653261393631
+       6164323736383364350a636166333031643461663964343163666339326532323562393037383035
+       3262
+   tasks:
+    # Initialize
+    - name: --Initialize-- Server
+      ansible.builtin.include_tasks: "stack/init.yml"
+
+    - name: --Initialize-- LVM Partition
+      ansible.builtin.include_tasks: "stack/lvm.yml"
+      run_once: true
+      when: lvm == 1
+
+    - name: Ownership folder to user
+      ansible.builtin.file:
+        path: "{{item}}"
+        state: directory
+        recurse: yes
+        owner: "{{ ansible_user }}"
+      with_items:
+        - "{{log_path}}"
+        - "{{local_path}}"
+
+    - name: "Enable lingering for user"
+      ansible.builtin.command: "loginctl enable-linger {{ ansible_user }}"
+      become: true
+      become_user: "{{ ansible_user }}"
+
+    - name: Login to quay.io and create ${XDG_RUNTIME_DIR}/containers/auth.json
+      containers.podman.podman_login:
+         username: Asta_Protek_Jiarsi@3000620680
+         password: 'Remnant%Liniment;15'
+         registry: dwh-ap-southeast-3.cr.bytepluses.com
+
+
+- name: Manager Environment
+  hosts: manager
+  become: true
+  gather_facts: true
+  become_user: "{{ ansible_user }}"
+  vars:
+    pod_name: 'manager'
+  tasks:
+    - name: --Initialize-- Certificate
+      ansible.builtin.include_tasks: "stack/certificate.yml"
+
+    - name: --Initialize-- Warpgate
+      ansible.builtin.include_tasks: "stack/security/wg.yml"
+
+    - name: --Initialize-- Airflow Manager
+      ansible.builtin.include_tasks: "stack/manager/airflow.yml"
+
+    - name: --Initialize-- Airflow Engine
+      ansible.builtin.include_tasks: "stack/engine/airflow.yml"
+
+
+-  name: ALL Environment
+   hosts:  all
+   become: true
+   gather_facts: true
+   vars:
+     tasks:
+        - name: "--PODMAN-- SSL Directory"
+          run_once: true
+          ansible.builtin.file:
+            path: "{{ item.path }}"
+            state: directory
+            mode: "{{ item.mode }}"
+          with_items:
+            - { path: "{{local_path}}/ssl/", mode: '0775' }
+
+        - name: Mount an NFS volume
+          become: true
+          become_user: root
+          ansible.posix.mount:
+            src: "{{host_dwh_manager}}:{{item.path}}"
+            path: "{{item.path}}"
+            opts: rw,sync,hard
+            state: mounted
+            fstype: nfs
+          with_items:
+            - { path: "{{local_path}}/ssl" }
+          ignore_errors: true
+
+        - name: Change permission
+          ansible.builtin.file:
+            path: "{{item.path}}"
+            mode: '0664'
+          with_items:
+            - { path: "{{local_path}}/ssl/ca-cert.pem" }
+            - { path: "{{local_path}}/ssl/ca.csr" }
+            - { path: "{{local_path}}/ssl/ca-key.pem" }
+            - { path: "{{local_path}}/ssl/server-cert.pem" }
+            - { path: "{{local_path}}/ssl/server.csr" }
+            - { path: "{{local_path}}/ssl/server-key.pem" }
+
+
+- name: Postgres Environment
+  hosts: database_staging
+  become: true
+  gather_facts: true
+  become_user: "{{ ansible_user }}"
+  vars:
+    pod_name: 'staging'
+  tasks:
+    - name: "--PODMAN-- Airflow Directory"
+      run_once: true
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: directory
+        mode: "{{ item.mode }}"
+      with_items:
+        - { path: "{{local_path}}/postgres/", mode: '0775' }
+
+    - name: --Initialize-- Postgres
+      ansible.builtin.include_tasks: "stack/clickhouse/postgres.yml"
+
+
+
+- name: Clickhouse Environment
+  hosts: database_ods_clickhouse
+  become: true
+  gather_facts: true
+  become_user: "{{ ansible_user }}"
+  vars:
+    pod_name: 'clickhouse'
+  tasks:
+    - name: --Initialize-- Certificate
+      ansible.builtin.include_tasks: "stack/clickhouse/ds.yml"
+
+

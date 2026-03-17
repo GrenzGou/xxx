@@ -1,0 +1,306 @@
+- name: "--PODMAN-- Airflow Directory"
+  run_once: true
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    mode: "{{ item.mode }}"
+  with_items:
+    - { path: "{{local_path}}/airflow", mode: '0775'}
+    - { path: "{{local_path}}/airflow/plugins", mode: '0775'}
+    - { path: "{{local_path}}/airflow/dags", mode: '0775'}
+    - { path: "{{local_path}}/airflow/config", mode: '0775'}
+    - { path: "{{local_path}}/airflow/postgres", mode: '0700'}
+  #  - { path: "{{log_path}}/airflow", mode: '777'}
+
+- name: "unmount an NFS volume"
+  become: true
+  become_user: root
+  ansible.posix.mount:
+    src: "{{host_dwh_engine}}:{{item.path}}"
+    path: "{{item.path}}"
+    opts: rw,sync,hard
+    state: unmounted
+    fstype: nfs
+  with_items:
+    - {path: "{{local_path}}/airflow"}
+  ignore_errors: true
+  when: mounting == 1
+
+- name: Mount an NFS volume
+  become: true
+  become_user: root
+  ansible.posix.mount:
+    src: "{{host_dwh_engine}}:{{item.path}}"
+    path: "{{item.path}}"
+    opts: rw,sync,hard
+    state: mounted
+    fstype: nfs
+  with_items:
+    - {path: "{{local_path}}/airflow"}
+  ignore_errors: true
+  when: mounting == 1
+
+- name: "APPLICATION [SYSTEMD] NFS Run"
+  become: true
+  ansible.builtin.systemd_service:
+    state: started
+    name: "{{item}}"
+  with_items:
+    - nfs-server
+  when: mounting == 1
+
+
+- name: "Setting Airlfow Redis"
+  containers.podman.podman_container:
+    pod: "{{pod_name}}"
+    name: airflow-redis
+    image: dwh-ap-southeast-3.cr.bytepluses.com/dw-app/redis:8.2
+    healthcheck: 'CMD redis-cli ping  && curl -f http://{{healthcheck_host}}:9922/ping/{{healthcheck_apikey}}/airflow-redis || exit 1'
+    healthcheck_interval: "10s"
+    healthcheck_timeout: "30s"
+    healthcheck_retries: "50"
+    healthcheck_start_period: "30s"
+    ports:
+      - "{{ airflow_redis_port }}:6379"
+    network: "{{podman_network}}"
+    env:
+      AIRFLOW_UID: "1000"
+
+- name: "Setting Airflow Postgres"
+  containers.podman.podman_container:
+    pod: "{{pod_name}}"
+    name: airflow-postgres
+    image: dwh-ap-southeast-3.cr.bytepluses.com/dw-app/postgres:18
+    env:
+      AIRFLOW_UID: "1000"
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    ports:
+      - "{{ airflow_postgres_port }}:5432"
+    healthcheck: 'CMD pg_isready -U airflow  && curl -f http://{{healthcheck_host}}:9922/ping/{{healthcheck_apikey}}/airflow-postgres || exit 1'
+    healthcheck_interval: "10s"
+    healthcheck_retries: "5"
+    healthcheck_start_period: "5s"
+    network: "{{podman_network}}"
+    volumes:
+      - "{{local_path}}/airflow/postgres:/var/lib/postgresql:z"
+
+
+- name: "--PODMAN-- Airflow Init"
+  containers.podman.podman_container:
+    pod: "{{pod_name}}"
+    name: airflow-init
+    image: dwh-ap-southeast-3.cr.bytepluses.com/dw-app/airflow:3.1.7
+    network: "{{podman_network}}"
+    env:
+      AIRFLOW_UID: "1000"
+      AIRFLOW__CORE__EXECUTOR: CeleryExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@airflow-postgres/airflow
+      AIRFLOW__CELERY__RESULT_BACKEND: db+postgresql://airflow:airflow@airflow-postgres/airflow
+      AIRFLOW__CELERY__BROKER_URL: redis://:@airflow-redis:6379/0
+      AIRFLOW__CORE__FERNET_KEY: ''
+      AIRFLOW__CORE__DEFAULT_TIMEZONE: Asia/Jakarta
+      AIRFLOW__API__SECRET_KEY: 'xxxxx'
+      AIRFLOW__API__SECRET_KEY_CMD: 'xxxxx'
+      AIRFLOW__API__SECRET_KEY_SECRET: 'xxxxx'
+      AIRFLOW__API_AUTH__JWT_SECRET: 'xxxxx'
+      AIRFLOW__API_AUTH__JWT_SECRET_CMD: 'xxxxx'
+      AIRFLOW__API_AUTH__JWT_SECRET_SECRET: 'xxxxx'
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
+      AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+      AIRFLOW__DAG_PROCESSOR__MIN_FILE_PROCESS_INTERVAL: 86400
+      AIRFLOW__API__AUTH_BACKENDS: 'airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session'
+      AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
+      _AIRFLOW_DB_MIGRATE: 'true'
+      _AIRFLOW_WWW_USER_CREATE: 'true'
+      _AIRFLOW_WWW_USER_USERNAME: 'airflow'
+      _AIRFLOW_WWW_USER_PASSWORD: 'confidential'
+      _PIP_ADDITIONAL_REQUIREMENTS: "{{ airflow_plugins }} apache-airflow-fab-auth-manager"
+      AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
+      AIRFLOW__CORE__EXECUTION_API_SERVER_URL: 'http://airflow-webserver:8080/execution/'
+    volumes:
+      #      - "{{local_path}}/airflow:/sources:z"
+      - "{{local_path}}/airflow/dags:/sources/dags:z"
+      - "{{log_path}}/airflow:/sources/logs:z"
+      - "{{local_path}}/airflow/plugins:/sources/plugins:z"
+      - "{{local_path}}/airflow/config:/sources/config:z"
+    command: |
+      if [[ -z "${AIRFLOW_UID}" ]]; then
+          echo
+          echo -e "\033[1;33mWARNING!!!: AIRFLOW_UID not set!\e[0m"
+          echo "If you are on Linux, you SHOULD follow the instructions below to set "
+          echo "AIRFLOW_UID environment variable, otherwise files will be owned by root."
+          echo "For other operating systems you can get rid of the warning with manually created .env file:"
+          echo "    See: https://airflow.apache.org/docs/apache-airflow/stable/howto/docker-compose/index.html#setting-the-right-airflow-user"
+          echo
+        fi
+        one_meg=1048576
+        mem_available=$$(($$(getconf _PHYS_PAGES) * $$(getconf PAGE_SIZE) / one_meg))
+        cpus_available=$$(grep -cE 'cpu[0-9]+' /proc/stat)
+        disk_available=$$(df / | tail -1 | awk '{print $$4}')
+        warning_resources="false"
+        if (( mem_available < 4000 )) ; then
+          echo
+          echo -e "\033[1;33mWARNING!!!: Not enough memory available for Docker.\e[0m"
+          echo "At least 4GB of memory required. You have $$(numfmt --to iec $$((mem_available * one_meg)))"
+          echo
+          warning_resources="true"
+        fi
+        if (( cpus_available < 2 )); then
+          echo
+          echo -e "\033[1;33mWARNING!!!: Not enough CPUS available for Docker.\e[0m"
+          echo "At least 2 CPUs recommended. You have $${cpus_available}"
+          echo
+          warning_resources="true"
+        fi
+        if (( disk_available < one_meg * 10 )); then
+          echo
+          echo -e "\033[1;33mWARNING!!!: Not enough Disk space available for Docker.\e[0m"
+          echo "At least 10 GBs recommended. You have $$(numfmt --to iec $$((disk_available * 1024 )))"
+          echo
+          warning_resources="true"
+        fi
+        if [[ $${warning_resources} == "true" ]]; then
+          echo
+          echo -e "\033[1;33mWARNING!!!: You have not enough resources to run Airflow (see above)!\e[0m"
+          echo "Please follow the instructions to increase amount of resources available:"
+          echo "   https://airflow.apache.org/docs/apache-airflow/stable/howto/docker-compose/index.html#before-you-begin"
+          echo
+        fi
+        mkdir -p /sources/logs /sources/dags /sources/plugins /sources/config
+        chown -R "${AIRFLOW_UID}:0" /sources/{logs,dags,plugins,config}
+        exec /entrypoint airflow version
+
+- name: "--PODMAN-- CONTAINER Airflow Webserver"
+  containers.podman.podman_container:
+    pod: "{{pod_name}}"
+    name: airflow-webserver
+    image: dwh-ap-southeast-3.cr.bytepluses.com/dw-app/airflow:3.1.7
+    recreate: true
+    tty: true
+    interactive: true
+    network: "{{podman_network}}"
+    healthcheck: 'curl --fail http://localhost:8080/health  && curl -f http://{{healthcheck_host}}:9922/ping/{{healthcheck_apikey}}/airflow-webserver || exit 1'
+    healthcheck_interval: "30s"
+    healthcheck_timeout: "10s"
+    healthcheck_retries: "5"
+    healthcheck_start_period: "30s"
+    command: api-server
+    ports:
+      - "{{app_airflow_port}}:8080"
+    env:
+      AIRFLOW_UID: "1000"
+      AIRFLOW__CORE__EXECUTOR: CeleryExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@airflow-postgres/airflow
+      AIRFLOW__CELERY__RESULT_BACKEND: db+postgresql://airflow:airflow@airflow-postgres/airflow
+      AIRFLOW__CELERY__BROKER_URL: redis://:@airflow-redis:6379/0
+      AIRFLOW__CORE__FERNET_KEY: ''
+      AIRFLOW__CORE__DEFAULT_TIMEZONE: Asia/Jakarta
+      AIRFLOW__API__SECRET_KEY: 'xxxxx'
+      AIRFLOW__API__SECRET_KEY_CMD: 'xxxxx'
+      AIRFLOW__API__SECRET_KEY_SECRET: 'xxxxx'
+      AIRFLOW__API_AUTH__JWT_SECRET: 'xxxxx'
+      AIRFLOW__API_AUTH__JWT_SECRET_CMD: 'xxxxx'
+      AIRFLOW__API_AUTH__JWT_SECRET_SECRET: 'xxxxx'
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
+      AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+      AIRFLOW__DAG_PROCESSOR__MIN_FILE_PROCESS_INTERVAL: 86400
+      AIRFLOW__API__AUTH_BACKENDS: 'airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session'
+      AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
+      #      AIRFLOW__OPENLINEAGE__TRANSPORT: "{\"type\": \"http\", \"url\": \"http://{{host_dwh_manager}}:{{marquez_port}}\", \"endpoint\": \"api/v1/lineage\"}"
+      #      AIRFLOW__OPENLINEAGE__NAMESPACE: 'dwh'
+      _PIP_ADDITIONAL_REQUIREMENTS: "{{ airflow_plugins }} apache-airflow-fab-auth-manager"
+      AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
+      AIRFLOW__CORE__EXECUTION_API_SERVER_URL: 'http://airflow-webserver:8080/execution/'
+    #      OPENLINEAGE_URL: http://dwh-manager:9911
+    #      OPENLINEAGE_NAMESPACE: dwh
+    volumes:
+      - "{{local_path}}/airflow/dags:/opt/airflow/dags:z"
+      - "{{log_path}}/airflow:/opt/airflow/logs:z"
+      - "{{local_path}}/airflow/plugins:/opt/airflow/plugins:z"
+      - "{{local_path}}/airflow/config:/opt/airflow/config:z"
+    labels:
+      traefik.enable: true
+      traefik.http.routers.airflow-webserver-secure.rule: Host(`{{inventory_hostname}}`) && PathPrefix(`/airflow`))
+      # traefik.http.services.airflow-webserver.loadbalancer.server.port: 8080
+      traefik.http.routers.airflow-webserver.entrypoints: websecure
+
+      # Add the following label
+      traefik.http.routers.airflow-webserver.tls: true
+      traefik.http.routers.airflow-webserver-secure.tls: true
+#      - "{{local_path}}/airflow/airflow.cfg:/opt/airflow/airflow.cfg:z"
+#    generate_systemd:
+#      path: "/home/{{ansible_user}}/.config/systemd/user/"
+#      restart_policy: always
+#      stop_timeout: 120
+#      names: true
+#      new: true
+
+
+
+- name: install dependency airflow
+  containers.podman.podman_container_exec:
+    name: "{{ item }}"
+    tty: true
+    user: 0
+    command: "apt update "
+  with_items:
+    - airflow-webserver
+
+- name: install dependency airflow
+  containers.podman.podman_container_exec:
+    name: "{{ item }}"
+    tty: true
+    user: 0
+    command: "apt install {{ airflow_dependency }} -y"
+  with_items:
+    - airflow-webserver
+
+- name: "Airflow Install Plugins"
+  containers.podman.podman_container_exec:
+    name: airflow-webserver
+    user: 0
+    command: "{{item}}"
+  when: init == 1
+  with_items:
+    - "apt update"
+    - "pip install {{ airflow_plugins }}"
+
+- name: "Airflow Import Variables"
+  containers.podman.podman_container_exec:
+    name: airflow-webserver
+    command: 'airflow variables import ./config/variables.json'
+  when: init == 1
+
+- name: "Airflow Import Connections"
+  containers.podman.podman_container_exec:
+    name: airflow-webserver
+    command: 'airflow connections import ./config/connections.json'
+  when: init == 1
+
+
+#- name: "Setting NFS"
+#  become: true
+#  become_user: root
+#  ansible.builtin.command: exportfs -arv
+
+
+- name: Remove file (delete file)
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  with_items:
+    - "{{local_path}}/airflow/config/connections.json"
+    - "{{local_path}}/airflow/config/variables.json"
+
+#- name: "APPLICATION [SYSTEMD] container start"
+#  ansible.builtin.systemd_service:
+#    name: "{{item}}"
+#    enabled: true
+#    masked: no
+#    state: started
+#    scope: user
+#  become: true
+#  with_items:
+#    - container-airflow-webserver

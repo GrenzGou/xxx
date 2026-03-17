@@ -1,0 +1,17 @@
+- name: Run pg_clickhouse container
+  containers.podman.podman_container:
+    name: pg_clichouse
+    image: dwh-ap-southeast-3.cr.bytepluses.com/dw-app/pg_clickhouse:18
+    state: started
+    restart_policy: always
+    ports:
+      - "{{staging_port}}:5432"
+    env:
+      POSTGRES_PASSWORD: "confidential"
+    network: "{{podman_network}}"
+
+- name: Create pg_clickhouse extension
+  containers.podman.podman_container_exec:
+    name: pg_clichouse
+    command: >
+      psql -U postgres -c "CREATE EXTENSION IF NOT EXISTS pg_clickhouse;"

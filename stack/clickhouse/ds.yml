@@ -1,0 +1,189 @@
+- name: "[DIRECTORY] Create"
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+  with_items:
+    - { path: "{{local_path}}/clickhouse" }
+    - { path: "{{local_path}}/clickhouse/config" }
+    - { path: "{{local_path}}/clickhouse/files" }
+    - { path: "{{local_path}}/clickhouse/data" }
+    - { path: "{{log_path}}/clickhouse" }
+
+
+- name: "--PODMAN-- USE S3 ods"
+  when: s3==1
+  copy:
+    dest: "{{local_path}}/clickhouse/config/s3.xml"
+    content: |
+      <clickhouse>
+      <storage_configuration>
+      <disks>
+      <backups>
+          <type>local</type>
+          <path>/files/backups/</path>
+      </backups>
+       <s3>
+         <type>s3</type>
+         <endpoint>https://{{ vars.s3_host }}/ods/</endpoint>
+         <access_key_id>{{ vars.s3_access_key_id }}</access_key_id>
+         <secret_access_key>{{ vars.s3_secret_access_key }}</secret_access_key>
+         <region>ap-southeast-3</region>
+         <metadata_path>/var/lib/clickhouse/disks/s3/</metadata_path>
+       </s3>
+      <s3_cache>
+       <type>cache</type>
+       <disk>s3</disk>
+       <path>/var/lib/clickhouse/disks/s3_cache/</path>
+       <max_size>10Gi</max_size>
+      </s3_cache>
+      </disks>
+      <policies>
+      <s3>
+         <volumes>
+             <main>
+                 <disk>s3</disk>
+             </main>
+         </volumes>
+      </s3>
+      </policies>
+      </storage_configuration>
+       <backups>
+         <allowed_disk>backups</allowed_disk>
+         <allowed_path>/files/backups/</allowed_path>
+       </backups>
+      </clickhouse>
+
+- name: "--PODMAN-- USE SSL ods"
+  copy:
+    dest: "{{local_path}}/clickhouse/config/ssl.xml"
+    content: |
+      <clickhouse>
+        <!-- HTTPS interface for HTTP protocol -->
+        <https_port>8443</https_port>
+        <!-- Secure native protocol port -->
+        <tcp_port_secure>9440</tcp_port_secure>
+
+        <!-- Disable non-secure ports (recommended for production) -->
+        <!-- <http_port>8123</http_port> -->
+        <!-- <tcp_port>9000</tcp_port> -->
+
+        <openSSL>
+          <server>
+            <!-- Path to SSL certificate -->
+            <certificateFile>/etc/clickhouse-server/certs/server-cert.pem</certificateFile>
+
+            <!-- Path to private key -->
+            <privateKeyFile>/etc/clickhouse-server/certs/server-key.pem</privateKeyFile>
+
+            <!-- Path to CA certificate for client verification -->
+            <caConfig>/etc/clickhouse-server/certs/ca-cert.pem</caConfig>
+
+            <!-- Verification mode: none, relaxed, strict -->
+            <verificationMode>relaxed</verificationMode>
+
+            <!-- Load default CA certificates -->
+            <loadDefaultCAFile>true</loadDefaultCAFile>
+
+            <!-- Cache SSL sessions -->
+            <cacheSessions>true</cacheSessions>
+
+            <!-- Disable session tickets for better security -->
+            <disableProtocols>sslv2,sslv3</disableProtocols>
+
+            <!-- Prefer server cipher order -->
+            <preferServerCiphers>true</preferServerCiphers>
+          </server>
+
+          <client>
+            <!-- For outgoing connections (distributed queries, dictionaries) -->
+            <loadDefaultCAFile>true</loadDefaultCAFile>
+            <caConfig>/etc/clickhouse-server/certs/ca-cert.pem</caConfig>
+            <cacheSessions>true</cacheSessions>
+            <disableProtocols>sslv2,sslv3</disableProtocols>
+            <preferServerCiphers>true</preferServerCiphers>
+            <verificationMode>relaxed</verificationMode>
+            <invalidCertificateHandler>
+              <name>RejectCertificateHandler</name>
+            </invalidCertificateHandler>
+          </client>
+        </openSSL>
+      </clickhouse>
+
+
+- name: "--PODMAN-- USE Storage Encrypt"
+  copy:
+    dest: "{{local_path}}/clickhouse/config/scrypt.xml"
+    content: |
+      <clickhouse>
+
+          <path>/var/lib/clickhouse/</path>
+      
+          <storage_configuration>
+      
+            <disks>
+      
+              <default>
+                <type>local</type>
+              </default>
+              <!-- Encrypted disk with key from environment variable -->
+              <encrypted_disk>
+                <type>encrypted</type>
+                <disk>default</disk>
+                <path>encrypted/</path>
+                <key_hex from_env="CLICKHOUSE_ENCRYPTION_KEY"/>
+              </encrypted_disk>
+            </disks>
+
+            <policies>
+              <encrypted_policy>
+                <volumes>
+                  <main>
+                    <disk>encrypted_disk</disk>
+                  </main>
+                </volumes>
+              </encrypted_policy>
+            </policies>
+          </storage_configuration>
+      </clickhouse>
+
+
+
+- name: "--PODMAN-- CONTAINER clickhouse"
+  containers.podman.podman_container:
+    pod: "{{pod_name}}"
+    name: ods-ch
+    image: docker.io/clickhouse/clickhouse-server
+    recreate: true
+    ports:
+      - "127.0.0.1:{{clickhouse_port}}:8443"
+      - "127.0.0.1:{{clickhouse_legacy_port}}:9440"
+    volumes:
+      - "{{local_path}}/clickhouse/data:/var/lib/clickhouse:z"
+      - "{{local_path}}/clickhouse/:/var/log/:z"
+      - "{{local_path}}/clickhouse/files:/files:z"
+      - "{{local_path}}/ssl/:/etc/clickhouse-server/certs:z"
+      - "{{local_path}}/clickhouse/config/ssl.xml:/etc/clickhouse-server/config.d/ssl.xml:z"
+      - "{{local_path}}/clickhouse/config/scrypt.xml:/etc/clickhouse-server/config.d/scrypt.xml:z"
+    shm_size: 64g
+    env:
+      CLICKHOUSE_USER: dwh
+      CLICKHOUSE_PASSWORD_FILE: /run/secrets/hidden
+      CLICKHOUSE_DB: ds_conf
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+      CLICKHOUSE_ENCRYPTION_KEY: "3cd35f6ddb3cd88b4ada9b906d553fc7"
+    secrets:
+      hidden
+    network: "{{podman_network}}"
+
+
+## Clickhouse
+#- name: Create user bytebase
+#  community.clickhouse.clickhouse_user:
+#    login_host: "{{clickhouse_host}}"
+#    login_port: "{{clickhouse_legacy_port}}"
+#    login_user: dwh
+#    login_db: ods
+#    login_password: "{{passwd_string}}"
+#    name: bytebase
+#    password: "{{passwd_string}}"
+#    type_password: sha256_password

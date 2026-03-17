@@ -1,0 +1,76 @@
+- name: "Create partitions on devices"
+  become: true
+  block:
+    - name: "Read device information /dev/nvme0n1"
+      parted:
+        device: "/dev/nvme0n1"
+        unit: MiB
+      register: device_info
+    - debug:
+        msg: "{{ device_info }}"
+
+    - name: Extend size to root
+      ansible.builtin.command: growpart /dev/nvme0n1 4
+      ignore_errors: True
+
+    - name: Resize a LVO Root
+      community.general.lvol:
+        vg: rocky
+        lv: "lvroot"
+        size: "50g"
+        resizefs: true
+        shrink: yes
+        force: yes
+        state: present
+
+    - name: unmount up device
+      ansible.posix.mount:
+        path: "{{ item.path }}"
+        src: "/dev/mapper/{{ item.src }}"
+        state: unmounted
+      with_items:
+        - {path: "{{log_path}}", src: 'rocky-logs'}
+        - {path: "{{local_path}}", src: 'rocky-data'}
+
+    - name: Create a LVO LOGS
+      community.general.lvol:
+        vg: rocky
+        lv: "logs"
+        size: "5G"
+        state: present
+
+    - name: Create a LVO Data
+      community.general.lvol:
+        vg: rocky
+        lv: data
+        size: "{{ storage_data }}G"
+        state: present
+
+    - name: Format xfs filesystem on /dev/mapper
+      community.general.filesystem:
+        fstype: xfs
+        dev: "/dev/mapper/{{ item }}"
+        state: present
+      with_items:
+        - rocky-logs
+        - rocky-data
+
+    - name: Mount up device
+      ansible.posix.mount:
+        path: "{{ item.path }}"
+        src: "/dev/mapper/{{ item.src }}"
+        fstype: xfs
+        state: mounted
+      with_items:
+        - {path: "{{log_path}}", src: 'rocky-logs'}
+        - {path: "{{local_path}}", src: 'rocky-data'}
+
+    - name: Ownership folder to user
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        recurse: yes
+        owner: "{{ ansible_user }}"
+      with_items:
+        - "{{local_path}}"
+        - "{{log_path}}"

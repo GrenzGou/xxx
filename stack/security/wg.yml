@@ -1,0 +1,30 @@
+- name: Create Folder Warpgate
+  ansible.builtin.file:
+    path: "{{item}}"
+    state: directory
+    recurse: yes
+    owner: "{{ ansible_user }}"
+  with_items:
+    - "{{local_path}}/warpgate"
+
+- name: Create warpgate container
+  containers.podman.podman_container:
+    name: warpgate
+    image: dwh-ap-southeast-3.cr.bytepluses.com/dw-app/warpgate:1.0
+    state: started
+    restart_policy: unless-stopped
+    interactive: true
+    tty: true
+    recreate: true
+    env:
+      TZ: "Asia/Jakarta"
+    volumes:
+      - "{{local_path}}/warpgate:/data:z"
+    ports:
+      - "2222:2222"
+      - "8888:8888"
+      - "33306:33306"
+      - "55432:55432"
+    network:
+      - apjn
+    shm_size: "1gb"

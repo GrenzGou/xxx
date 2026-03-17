@@ -1,0 +1,323 @@
+- name: "--PODMAN-- Airflow Directory"
+  run_once: true
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    mode: "{{ item.mode }}"
+  with_items:
+    - { path: "{{local_path}}/airflow", mode: '0775'}
+    - { path: "{{local_path}}/airflow/dags", mode: '0775'}
+    - { path: "{{local_path}}/airflow/plugins", mode: '0775'}
+    - { path: "{{local_path}}/airflow/config", mode: '0775'}
+    # - { path: "{{log_path}}/airflow", mode: '777'}
+    - { path: "{{local_path}}/airflow/db", mode: '0755'}
+    - { path: "{{local_path}}/airflow/db/postgres", mode: '0755'}
+
+
+- name: unmount an NFS volume
+  become: true
+  become_user: root
+  ansible.posix.mount:
+    src: "{{host_dwh_manager}}:{{item.path}}"
+    path: "{{item.path}}"
+    opts: rw,sync,hard
+    state: unmounted
+    fstype: nfs
+  with_items:
+    - {path: "{{log_path}}/airflow"}
+  ignore_errors: true
+  when: mounting == 1
+
+- name: Mount an NFS volume
+  become: true
+  become_user: root
+  ansible.posix.mount:
+    src: "{{host_dwh_manager}}:{{item.path}}"
+    path: "{{item.path}}"
+    opts: rw,sync,hard
+    state: mounted
+    fstype: nfs
+  with_items:
+    - {path: "{{log_path}}/airflow"}
+  ignore_errors: true
+  when: mounting == 1
+
+
+- name: "APPLICATION [SYSTEMD] NFS Run"
+  become: true
+  ansible.builtin.systemd_service:
+    state: started
+    name: "{{item}}"
+  with_items:
+    - nfs-server
+  when: mounting == 1
+
+
+#- name: "Airflow Zip"
+#  community.general.archive:
+#    path: ./airflow
+#    dest: ./files/airflow.tgz
+#  delegate_to: localhost
+
+#- name: Airflow initial config airflow
+#  ansible.builtin.copy:
+#    src: "../files/airflow.tgz"
+#    dest: "{{local_path}}/airflow/airflow.tgz"
+
+#- name: Extract airflow config
+#  ansible.builtin.unarchive:
+#    src: "{{local_path}}/airflow/airflow.tgz"
+#    dest: "{{local_path}}/"
+#    remote_src: true
+#  when: 1==1
+
+- name:  "--PODMAN-- CONTAINER Airflow Worker"
+  containers.podman.podman_container:
+    pod: "{{pod_name}}"
+    name: airflow-worker
+    image: dwh-ap-southeast-3.cr.bytepluses.com/dw-app/airflow:3.1.7
+    recreate: true
+    tty: true
+    interactive: true
+    network: "{{podman_network}}"
+    healthcheck: 'celery --app airflow.providers.celery.executors.celery_executor.app inspect ping -d celery@${HOSTNAME} || celery --app airflow.executors.celery_executor.app inspect ping -d celery@$${HOSTNAME}'
+    healthcheck_interval: "30s"
+    healthcheck_timeout: "10s"
+    healthcheck_retries: "5"
+    healthcheck_start_period: "30s"
+    command: celery worker
+    ports:
+      - 8793:8793
+    env:
+      AIRFLOW_UID: 1000
+      AIRFLOW__CORE__EXECUTOR: CeleryExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: "postgresql+psycopg2://airflow:airflow@{{host_dwh_manager}}:{{ airflow_postgres_port }}/airflow"
+      AIRFLOW__CELERY__RESULT_BACKEND: "db+postgresql://airflow:airflow@{{host_dwh_manager}}:{{ airflow_postgres_port }}/airflow"
+      AIRFLOW__CELERY__BROKER_URL: "redis://:@{{host_dwh_manager}}:{{ airflow_redis_port }}/0"
+      AIRFLOW__CORE__FERNET_KEY: ''
+      AIRFLOW__CORE__DEFAULT_TIMEZONE: Asia/Jakarta
+      AIRFLOW__API__SECRET_KEY: 'xxxxx'
+      AIRFLOW__API__SECRET_KEY_CMD: 'xxxxx'
+      AIRFLOW__API__SECRET_KEY_SECRET: 'xxxxx'
+      AIRFLOW__API_AUTH__JWT_SECRET: 'xxxxx'
+      AIRFLOW__API_AUTH__JWT_SECRET_CMD: 'xxxxx'
+      AIRFLOW__API_AUTH__JWT_SECRET_SECRET: 'xxxxx'
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
+      AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+      AIRFLOW__DAG_PROCESSOR__MIN_FILE_PROCESS_INTERVAL: 86400
+      AIRFLOW__API__AUTH_BACKENDS: 'airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session'
+      AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
+      #      AIRFLOW__OPENLINEAGE__TRANSPORT: "{\"type\": \"http\", \"url\": \"http://{{host_dwh_manager}}:{{marquez_port}}\", \"endpoint\": \"api/v1/lineage\"}"
+      #      AIRFLOW__OPENLINEAGE__NAMESPACE: 'dwh'
+      _PIP_ADDITIONAL_REQUIREMENTS: "{{ airflow_plugins }} apache-airflow-fab-auth-manager"
+      AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
+      AIRFLOW__CORE__EXECUTION_API_SERVER_URL: 'http://{{host_dwh_manager}}:{{app_airflow_port}}/execution/'
+    #      OPENLINEAGE_URL: http://dwh-manager:9911
+    #      OPENLINEAGE_NAMESPACE: dwh
+    volumes:
+      - "{{local_path}}/airflow/dags:/opt/airflow/dags:z"
+      - "{{log_path}}/airflow:/opt/airflow/logs:z"
+      - "{{local_path}}/airflow/plugins:/opt/airflow/plugins:z"
+      - "{{local_path}}/airflow/config:/opt/airflow/config:z"
+      #      - "{{local_path}}/airflow/airflow.cfg:/opt/airflow/airflow.cfg:z"
+      #    generate_systemd:
+      #      path: "/home/{{ansible_user}}/.config/systemd/user/"
+      #      restart_policy: always
+      #      stop_timeout: 120
+      #      names: true
+      #      new: true
+
+
+- name: "--PODMAN-- CONTAINER Airflow Scheduler"
+  containers.podman.podman_container:
+    pod: "{{pod_name}}"
+    name: airflow-scheduler
+    image: dwh-ap-southeast-3.cr.bytepluses.com/dw-app/airflow:3.1.7
+    recreate: true
+    tty: true
+    interactive: true
+    network: "{{podman_network}}"
+    healthcheck: 'curl --fail http://localhost:8974/health'
+    healthcheck_interval: "30s"
+    healthcheck_timeout: "10s"
+    healthcheck_retries: "5"
+    healthcheck_start_period: "30s"
+    command: scheduler
+    env:
+      AIRFLOW_UID: "1000"
+      AIRFLOW__CORE__EXECUTOR: CeleryExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: "postgresql+psycopg2://airflow:airflow@{{host_dwh_manager}}:{{ airflow_postgres_port }}/airflow"
+      AIRFLOW__CELERY__RESULT_BACKEND: "db+postgresql://airflow:airflow@{{host_dwh_manager}}:{{ airflow_postgres_port }}/airflow"
+      AIRFLOW__CELERY__BROKER_URL: "redis://:@{{host_dwh_manager}}:{{ airflow_redis_port }}/0"
+      AIRFLOW__CORE__FERNET_KEY: ''
+      AIRFLOW__CORE__DEFAULT_TIMEZONE: Asia/Jakarta
+      AIRFLOW__API__SECRET_KEY: 'xxxxx'
+      AIRFLOW__API__SECRET_KEY_CMD: 'xxxxx'
+      AIRFLOW__API__SECRET_KEY_SECRET: 'xxxxx'
+      AIRFLOW__API_AUTH__JWT_SECRET: 'xxxxx'
+      AIRFLOW__API_AUTH__JWT_SECRET_CMD: 'xxxxx'
+      AIRFLOW__API_AUTH__JWT_SECRET_SECRET: 'xxxxx'
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
+      AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+      AIRFLOW__DAG_PROCESSOR__MIN_FILE_PROCESS_INTERVAL: 86400
+      AIRFLOW__API__AUTH_BACKENDS: 'airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session'
+      AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
+      #      AIRFLOW__OPENLINEAGE__TRANSPORT: "{\"type\": \"http\", \"url\": \"http://{{host_dwh_manager}}:{{marquez_port}}\", \"endpoint\": \"api/v1/lineage\"}"
+      #      AIRFLOW__OPENLINEAGE__NAMESPACE: 'dwh'
+      _PIP_ADDITIONAL_REQUIREMENTS: "{{ airflow_plugins }} apache-airflow-fab-auth-manager"
+      AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
+      AIRFLOW__CORE__EXECUTION_API_SERVER_URL: 'http://{{host_dwh_manager}}:{{app_airflow_port}}/execution/'
+    #      OPENLINEAGE_URL: http://dwh-manager:9911
+    #      OPENLINEAGE_NAMESPACE: dwh
+    volumes:
+      - "{{local_path}}/airflow/dags:/opt/airflow/dags:z"
+      - "{{log_path}}/airflow:/opt/airflow/logs:z"
+      - "{{local_path}}/airflow/plugins:/opt/airflow/plugins:z"
+      - "{{local_path}}/airflow/config:/opt/airflow/config:z"
+      #      - "{{local_path}}/airflow/airflow.cfg:/opt/airflow/airflow.cfg:z"
+      #    generate_systemd:
+      #      path: "/home/{{ansible_user}}/.config/systemd/user/"
+      #      restart_policy: always
+      #      stop_timeout: 120
+      #      names: true
+      #      new: true
+
+
+
+- name: "--PODMAN-- CONTAINER Airflow dag-processor"
+  containers.podman.podman_container:
+    pod: "{{pod_name}}"
+    name: airflow-dag-processor
+    image: dwh-ap-southeast-3.cr.bytepluses.com/dw-app/airflow:3.1.7
+    recreate: true
+    tty: true
+    interactive: true
+    network: "{{podman_network}}"
+    healthcheck: 'curl --fail http://localhost:8974/health'
+    healthcheck_interval: "30s"
+    healthcheck_timeout: "10s"
+    healthcheck_retries: "5"
+    healthcheck_start_period: "30s"
+    command: dag-processor
+    env:
+      AIRFLOW_UID: "1000"
+      AIRFLOW__CORE__EXECUTOR: CeleryExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: "postgresql+psycopg2://airflow:airflow@{{host_dwh_manager}}:{{ airflow_postgres_port }}/airflow"
+      AIRFLOW__CELERY__RESULT_BACKEND: "db+postgresql://airflow:airflow@{{host_dwh_manager}}:{{ airflow_postgres_port }}/airflow"
+      AIRFLOW__CELERY__BROKER_URL: "redis://:@{{host_dwh_manager}}:{{ airflow_redis_port }}/0"
+      AIRFLOW__CORE__FERNET_KEY: ''
+      AIRFLOW__CORE__DEFAULT_TIMEZONE: Asia/Jakarta
+      AIRFLOW__API__SECRET_KEY: 'xxxxx'
+      AIRFLOW__API__SECRET_KEY_CMD: 'xxxxx'
+      AIRFLOW__API__SECRET_KEY_SECRET: 'xxxxx'
+      AIRFLOW__API_AUTH__JWT_SECRET: 'xxxxx'
+      AIRFLOW__API_AUTH__JWT_SECRET_CMD: 'xxxxx'
+      AIRFLOW__API_AUTH__JWT_SECRET_SECRET: 'xxxxx'
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
+      AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+      AIRFLOW__DAG_PROCESSOR__MIN_FILE_PROCESS_INTERVAL: 86400
+      AIRFLOW__API__AUTH_BACKENDS: 'airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session'
+      AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
+      #      AIRFLOW__OPENLINEAGE__TRANSPORT: "{\'type\': \'http\', \"url\": \"http://{{host_dwh_manager}}:{{marquez_port}}\", \"endpoint\": \"api/v1/lineage\"}"
+      AIRFLOW__OPENLINEAGE__NAMESPACE: 'dwh'
+      _PIP_ADDITIONAL_REQUIREMENTS: "{{ airflow_plugins }} apache-airflow-fab-auth-manager"
+      AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
+      AIRFLOW__CORE__EXECUTION_API_SERVER_URL: 'http://{{host_dwh_manager}}:{{app_airflow_port}}/execution/'
+      OPENLINEAGE_URL: http://dwh-manager:9911
+      OPENLINEAGE_NAMESPACE: dwh
+    volumes:
+      - "{{local_path}}/airflow/dags:/opt/airflow/dags:z"
+      - "{{log_path}}/airflow:/opt/airflow/logs:z"
+      - "{{local_path}}/airflow/plugins:/opt/airflow/plugins:z"
+      - "{{local_path}}/airflow/config:/opt/airflow/config:z"
+      #      - "{{local_path}}/airflow/airflow.cfg:/opt/airflow/airflow.cfg:z"
+      #    generate_systemd:
+      #      path: "/home/{{ansible_user}}/.config/systemd/user/"
+      #      restart_policy: always
+      #      stop_timeout: 120
+      #      names: true
+      #      new: true
+
+
+- name: "--PODMAN-- CONTAINER Airflow Triggerer"
+  containers.podman.podman_container:
+    pod: "{{pod_name}}"
+    name: airflow-triggerer
+    image: dwh-ap-southeast-3.cr.bytepluses.com/dw-app/airflow:3.1.7
+    recreate: true
+    tty: true
+    interactive: true
+    network: "{{podman_network}}"
+    healthcheck: 'airflow jobs check --job-type TriggererJob --hostname ${HOSTNAME}'
+    healthcheck_interval: "30s"
+    healthcheck_timeout: "10s"
+    healthcheck_retries: "5"
+    healthcheck_start_period: "30s"
+    command: triggerer
+    env:
+      AIRFLOW_UID: "1000"
+      AIRFLOW__CORE__EXECUTOR: CeleryExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: "postgresql+psycopg2://airflow:airflow@{{host_dwh_manager}}:{{ airflow_postgres_port }}/airflow"
+      AIRFLOW__CELERY__RESULT_BACKEND: "db+postgresql://airflow:airflow@{{host_dwh_manager}}:{{ airflow_postgres_port }}/airflow"
+      AIRFLOW__CELERY__BROKER_URL: "redis://:@{{host_dwh_manager}}:{{ airflow_redis_port }}/0"
+      AIRFLOW__CORE__FERNET_KEY: ''
+      AIRFLOW__CORE__DEFAULT_TIMEZONE: Asia/Jakarta
+      AIRFLOW__API__SECRET_KEY: 'xxxxx'
+      AIRFLOW__API__SECRET_KEY_CMD: 'xxxxx'
+      AIRFLOW__API__SECRET_KEY_SECRET: 'xxxxx'
+      AIRFLOW__API_AUTH__JWT_SECRET: 'xxxxx'
+      AIRFLOW__API_AUTH__JWT_SECRET_CMD: 'xxxxx'
+      AIRFLOW__API_AUTH__JWT_SECRET_SECRET: 'xxxxx'
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
+      AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+      AIRFLOW__DAG_PROCESSOR__MIN_FILE_PROCESS_INTERVAL: 86400
+      AIRFLOW__API__AUTH_BACKENDS: 'airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session'
+      AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
+      #      AIRFLOW__OPENLINEAGE__TRANSPORT: "{ \"type\": \"http \", \"url\": \"http://{{host_dwh_manager}}:{{marquez_port}}\",  \"endpoint\":  \"api/v1/lineage\"}"
+      #      AIRFLOW__OPENLINEAGE__NAMESPACE: 'dwh'
+      _PIP_ADDITIONAL_REQUIREMENTS: "{{ airflow_plugins }} apache-airflow-fab-auth-manager"
+      AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
+      AIRFLOW__CORE__EXECUTION_API_SERVER_URL: 'http://{{host_dwh_manager}}:{{app_airflow_port}}/execution/'
+    #      OPENLINEAGE_URL: http://dwh-manager:9911
+    #      OPENLINEAGE_NAMESPACE: dwh
+    volumes:
+      - "{{local_path}}/airflow/dags:/opt/airflow/dags:z"
+      - "{{log_path}}/airflow:/opt/airflow/logs:z"
+      - "{{local_path}}/airflow/plugins:/opt/airflow/plugins:z"
+      - "{{local_path}}/airflow/config:/opt/airflow/config:z"
+#      - "{{local_path}}/airflow/airflow.cfg:/opt/airflow/airflow.cfg:z"
+#    generate_systemd:
+#      path: "/home/{{ansible_user}}/.config/systemd/user/"
+#      restart_policy: always
+#      stop_timeout: 120
+#      names: true
+#      new: true
+
+#- name: Check ODS active
+#  wait_for:
+#    host: "localhost"
+#    port: "8793"
+
+-  name: install dependency airflow
+   containers.podman.podman_container_exec:
+     name: "{{ item }}"
+     tty: true
+     user: 0
+     command: "apt update "
+   with_items:
+     - airflow-worker
+     - airflow-scheduler
+     - airflow-triggerer
+     - airflow-dag-processor
+
+-  name: install dependency airflow
+   containers.podman.podman_container_exec:
+     name: "{{ item }}"
+     tty: true
+     user: 0
+     command: "apt install {{ airflow_dependency }} -y"
+   with_items:
+     - airflow-worker
+     - airflow-scheduler
+     - airflow-triggerer
+     - airflow-dag-processor

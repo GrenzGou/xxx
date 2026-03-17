@@ -1,0 +1,91 @@
+- name: "--PODMAN-- Certificate Directory"
+  run_once: true
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    mode: "{{ item.mode }}"
+  with_items:
+    - { path: "{{local_path}}/ssl/", mode: '0775' }
+
+- name: Generate CA private key
+  community.crypto.openssl_privatekey:
+    path: "{{ local_path }}/ssl/ca-key.pem"
+    size: 4096
+
+- name: Generate CA CSR
+  community.crypto.openssl_csr:
+    path: "{{ local_path }}/ssl/ca.csr"
+    privatekey_path: "{{ local_path }}/ssl/ca-key.pem"
+    common_name: Jiarsi-CA
+    country_name: ID
+    state_or_province_name: Banten
+    locality_name: Tangerang
+    organization_name: JiarsiSecureCert
+    basic_constraints:
+      - CA:TRUE
+    key_usage:
+      - keyCertSign
+      - cRLSign
+
+- name: Generate CA certificate
+  community.crypto.x509_certificate:
+    path: "{{ local_path }}/ssl/ca-cert.pem"
+    csr_path: "{{ local_path }}/ssl/ca.csr"
+    privatekey_path: "{{ local_path }}/ssl/ca-key.pem"
+    provider: selfsigned
+    selfsigned_not_after: "+3650d"
+
+- name: Generate server private key
+  community.crypto.openssl_privatekey:
+    path: "{{ local_path }}/ssl/server-key.pem"
+    size: 4096
+
+- name: Generate server CSR
+  community.crypto.openssl_csr:
+    path: "{{ local_path }}/ssl/server.csr"
+    privatekey_path: "{{ local_path }}/ssl/server-key.pem"
+    common_name: dwh-manager
+    country_name: ID
+    state_or_province_name: Banten
+    locality_name: Tangerang
+    organization_name: JiarsiSecureCert
+    subject_alt_name:
+      - DNS:dwh-ods-ch
+      - DNS:dwh-dm-ph
+      - DNS:dwh-ods-pg
+      - DNS:dwh-manager
+      - DNS:dwh-vault
+      - DNS:dwh-engine
+      - DNS:localhost
+      - IP:127.0.0.1
+
+- name: Sign server certificate with CA
+  community.crypto.x509_certificate:
+    path: "{{ local_path }}/ssl/server-cert.pem"
+    csr_path: "{{ local_path }}/ssl/server.csr"
+    ownca_path: "{{ local_path }}/ssl/ca-cert.pem"
+    ownca_privatekey_path: "{{ local_path }}/ssl/ca-key.pem"
+    provider: ownca
+    ownca_not_after: "+1825d"
+
+- name: Cert Shared mounting
+  become: true
+  become_user: root
+  ansible.builtin.lineinfile:
+    path: /etc/exports
+    line: "{{local_path}}/ssl {{item.host}}(rw,sync,no_root_squash,no_subtree_check)"
+  with_items:
+    - { host: "dwh-ods-ch" }
+    - { host: "dwh-dm-ch" }
+    - { host: "dwh-manager" }
+    - { host: "dwh-vault" }
+    - { host: "dwh-engine" }
+    - { host: "dwh-staging-pg" }
+
+- name: "APPLICATION [SYSTEMD] NFS Run"
+  become: true
+  ansible.builtin.systemd_service:
+    state: started
+    name: "{{item}}"
+  with_items:
+    - nfs-server
