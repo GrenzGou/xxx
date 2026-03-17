@@ -152,7 +152,7 @@
   containers.podman.podman_container:
     pod: "{{pod_name}}"
     name: ods-ch
-    image: docker.io/clickhouse/clickhouse-server
+    image: dwh-ap-southeast-3.cr.bytepluses.com/dw-app/clickhouse:26.2
     recreate: true
     ports:
       - "127.0.0.1:{{clickhouse_port}}:8443"
