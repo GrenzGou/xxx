@@ -1,5 +1,5 @@
 -  name: ALL Environment
-   hosts:  all
+   hosts:  *
    become: true
    gather_facts: true
    vars:
@@ -65,7 +65,7 @@
 
 
 -  name: ALL Environment
-   hosts:  all
+   hosts:  *
    become: true
    gather_facts: true
    vars:
