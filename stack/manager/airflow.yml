@@ -59,6 +59,7 @@
     healthcheck_timeout: "30s"
     healthcheck_retries: "50"
     healthcheck_start_period: "30s"
+    recreate: true
     ports:
       - "{{ airflow_redis_port }}:6379"
     network: "{{podman_network}}"
@@ -69,6 +70,7 @@
   containers.podman.podman_container:
     name: airflow-postgres
     image: dwh-ap-southeast-3.cr.bytepluses.com/dw-app/postgres:18
+    recreate: true
     env:
       AIRFLOW_UID: "1000"
       POSTGRES_USER: airflow
