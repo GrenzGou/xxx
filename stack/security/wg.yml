@@ -1,9 +1,9 @@
 - name: Create Folder Warpgate
+  become: true
   ansible.builtin.file:
     path: "{{item}}"
     state: directory
-    recurse: yes
-    owner: "{{ ansible_user }}"
+#    owner: "{{ ansible_user }}"
   with_items:
     - "{{local_path}}/warpgate"
 
