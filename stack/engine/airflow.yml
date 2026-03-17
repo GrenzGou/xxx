@@ -73,7 +73,6 @@
 
 - name:  "--PODMAN-- CONTAINER Airflow Worker"
   containers.podman.podman_container:
-    pod: "{{pod_name}}"
     name: airflow-worker
     image: dwh-ap-southeast-3.cr.bytepluses.com/dw-app/airflow:3.1.7
     recreate: true
@@ -130,7 +129,6 @@
 
 - name: "--PODMAN-- CONTAINER Airflow Scheduler"
   containers.podman.podman_container:
-    pod: "{{pod_name}}"
     name: airflow-scheduler
     image: dwh-ap-southeast-3.cr.bytepluses.com/dw-app/airflow:3.1.7
     recreate: true
@@ -186,7 +184,6 @@
 
 - name: "--PODMAN-- CONTAINER Airflow dag-processor"
   containers.podman.podman_container:
-    pod: "{{pod_name}}"
     name: airflow-dag-processor
     image: dwh-ap-southeast-3.cr.bytepluses.com/dw-app/airflow:3.1.7
     recreate: true
@@ -241,7 +238,6 @@
 
 - name: "--PODMAN-- CONTAINER Airflow Triggerer"
   containers.podman.podman_container:
-    pod: "{{pod_name}}"
     name: airflow-triggerer
     image: dwh-ap-southeast-3.cr.bytepluses.com/dw-app/airflow:3.1.7
     recreate: true
