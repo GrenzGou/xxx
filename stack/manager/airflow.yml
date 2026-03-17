@@ -52,7 +52,6 @@
 
 - name: "Setting Airlfow Redis"
   containers.podman.podman_container:
-    pod: "{{pod_name}}"
     name: airflow-redis
     image: dwh-ap-southeast-3.cr.bytepluses.com/dw-app/redis:8.2
     healthcheck: 'CMD redis-cli ping  && curl -f http://{{healthcheck_host}}:9922/ping/{{healthcheck_apikey}}/airflow-redis || exit 1'
@@ -68,7 +67,6 @@
 
 - name: "Setting Airflow Postgres"
   containers.podman.podman_container:
-    pod: "{{pod_name}}"
     name: airflow-postgres
     image: dwh-ap-southeast-3.cr.bytepluses.com/dw-app/postgres:18
     env:
@@ -89,7 +87,6 @@
 
 - name: "--PODMAN-- Airflow Init"
   containers.podman.podman_container:
-    pod: "{{pod_name}}"
     name: airflow-init
     image: dwh-ap-southeast-3.cr.bytepluses.com/dw-app/airflow:3.1.7
     network: "{{podman_network}}"
@@ -174,7 +171,6 @@
 
 - name: "--PODMAN-- CONTAINER Airflow Webserver"
   containers.podman.podman_container:
-    pod: "{{pod_name}}"
     name: airflow-webserver
     image: dwh-ap-southeast-3.cr.bytepluses.com/dw-app/airflow:3.1.7
     recreate: true
