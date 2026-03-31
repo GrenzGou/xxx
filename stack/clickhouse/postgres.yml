@@ -1,17 +1,64 @@
+- name: "[DIRECTORY] Create"
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+  with_items:
+    - { path: "{{local_path}}/pg_clickhouse" }
+    - { path: "{{local_path}}/pg_clickhouse/config" }
+    - { path: "{{local_path}}/pg_clickhouse/files" }
+    - { path: "{{local_path}}/pg_clickhouse/data" }
+    - { path: "{{log_path}}/pg_clickhouse" }
+    - { path: "{{local_path}}/pg_citus" }
+    - { path: "{{local_path}}/pg_citus/config" }
+    - { path: "{{local_path}}/pg_citus/files" }
+    - { path: "{{local_path}}/pg_citus/data" }
+    - { path: "{{log_path}}/pg_citus" }
+
 - name: Run pg_clickhouse container
   containers.podman.podman_container:
-    name: pg_clichouse
+    name: pg_clickhouse
     image: dwh-ap-southeast-3.cr.bytepluses.com/dw-app/pg_clickhouse:18
     state: started
     restart_policy: always
     ports:
-      - "{{staging_port}}:5432"
+      - "8{{staging_port}}:5432"
     env:
       POSTGRES_PASSWORD: "confidential"
+    volumes:
+      - "{{local_path}}/pg_clickhouse/data:/var/lib/postgresql/data:z"
+      # - "{{local_path}}/postgres/config:/var/lib/postgresql/data:z"
+      - "{{local_path}}/pg_clickhouse/files:/files:z"
     network: "{{podman_network}}"
+    command:
+      -  postgres
+      - -c ssl=on
+      - -c ssl_cert_file=/files/server-cert.pem
+      - -c ssl_key_file=/files/server-key.pem
+
+- name: Run pg_citus container
+  containers.podman.podman_container:
+    name: pg_citus
+    image: dwh-ap-southeast-3.cr.bytepluses.com/dw-app/citus:14
+    state: started
+    restart_policy: always
+    ports:
+      - "8{{citus_port}}:5432"
+    env:
+      POSTGRES_PASSWORD: "confidential"
+    volumes:
+      - "{{local_path}}/pg_citus/data:/var/lib/postgresql/data:z"
+      # - "{{local_path}}/postgres/config:/var/lib/postgresql/data:z"
+      - "{{local_path}}/pg_citus/files:/files:z"
+    network: "{{podman_network}}"
+    command:
+      -  postgres
+      - -c ssl=on
+      - -c ssl_cert_file=/files/server-cert.pem
+      - -c ssl_key_file=/files/server-key.pem
+
 
 - name: Create pg_clickhouse extension
   containers.podman.podman_container_exec:
-    name: pg_clichouse
+    name: pg_clickhouse
     command: >
       psql -U postgres -c "CREATE EXTENSION IF NOT EXISTS pg_clickhouse;"
